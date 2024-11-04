@@ -1,11 +1,12 @@
 import React, { useEffect, useState, useRef } from 'react';
 import * as d3 from 'd3';
+import { sankey, sankeyLinkHorizontal } from 'd3-sankey';
 import { useResizeObserver, useDebounceCallback } from 'usehooks-ts';
 
 interface DataType {
   EducationLevel: string;
   PaymentHistory: string;
-  Income: number;
+  Income: string;
   RiskRating: string;
 }
 
@@ -13,9 +14,9 @@ export default function ParallelCoordinatesPlot() {
   const scatterRef = useRef<HTMLDivElement>(null);
   const [data, setData] = useState<DataType[]>([]);
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const margin = { top: 50, right: 60, bottom: 100, left: 60 }; // Increased bottom margin for axis labels
-  const legendMargin = 20;
-  const legendRectSize = 15;
+
+  // Increased top margin to make room for the title
+  const margin = { top: 80, right: 60, bottom: 100, left: 60 };
   const onResize = useDebounceCallback((size) => setSize(size), 200);
   useResizeObserver({ ref: scatterRef, onResize });
 
@@ -37,24 +38,24 @@ export default function ParallelCoordinatesPlot() {
     return '> 200K';
   };
 
-  // Load the CSV data with a check for empty income values
+  // Load the CSV data
   useEffect(() => {
     d3.csv('/data/financial_risk_assessment.csv', (d) => {
       const educationLevel = d['Education Level'];
       const paymentHistory = d['Payment History'];
-      const income = d['Income'] && d['Income'].trim() !== '' ? +d['Income'] : NaN;  // Handle empty or whitespace income values
+      const income =
+        d['Income'] && d['Income'].trim() !== '' ? +d['Income'] : NaN;
       const riskRating = d['Risk Rating'];
 
-      // Filter out rows with invalid or missing values
       if (educationLevel && paymentHistory && !isNaN(income) && riskRating) {
         return {
           EducationLevel: educationLevel,
           PaymentHistory: paymentHistory,
-          Income: assignIncomeToRange(income),  // Assign income to range
+          Income: assignIncomeToRange(income),
           RiskRating: riskRating,
         } as DataType;
       }
-      return null;  // Filter out rows with invalid data
+      return null;
     }).then((loadedData) => {
       const validData = loadedData.filter((d) => d !== null) as DataType[];
       setData(validData);
@@ -70,121 +71,177 @@ export default function ParallelCoordinatesPlot() {
   }, [data, size]);
 
   function initChart() {
-    const svg = d3.select('#parallel-coordinates-svg')
+    const svg = d3
+      .select('#parallel-coordinates-svg')
       .attr('width', size.width)
       .attr('height', size.height);
 
-    // Explicitly name the dimensions from left to right
-    const dimensions = ['RiskRating', 'EducationLevel', 'PaymentHistory', 'Income'];
-    const axisLabels = ['Risk Rating', 'Education', 'Payment History', 'Income'];
-    
-    const yScales: Record<string, d3.ScaleLinear<number, number> | d3.ScalePoint<string>> = {};
+    const dimensions = [
+      'EducationLevel',
+      'PaymentHistory',
+      'Income',
+      'RiskRating',
+    ];
+    const axisLabels = ['Education', 'Payment History', 'Income', 'Risk Rating'];
 
-    // Create scales for each axis
-    const categoricalVars = {
-      EducationLevel: ['High School', "Bachelor's", "Master's", 'PhD'],
-      PaymentHistory: ['Poor', 'Fair', 'Good', 'Excellent'],
-      Income: incomeRanges,  // Use income ranges instead of continuous values
-      RiskRating: ['Low', 'Medium', 'High'],
-    };
+    // Generate nodes and links for the sankey diagram
+    const nodesSet = new Set<string>();
+    const linksMap = new Map<
+      string,
+      { source: string; target: string; value: number }
+    >();
 
-    dimensions.forEach((dimension) => {
-      yScales[dimension] = d3.scalePoint()
-        .domain(categoricalVars[dimension as keyof typeof categoricalVars])
-        .range([size.height - margin.bottom, margin.top]);
+    data.forEach((d) => {
+      dimensions.reduce((prevDimension, currDimension) => {
+        if (prevDimension) {
+          const sourceNode = `${prevDimension}_${d[
+            prevDimension as keyof DataType
+          ]}`;
+          const targetNode = `${currDimension}_${d[
+            currDimension as keyof DataType
+          ]}`;
+
+          // Add nodes
+          nodesSet.add(sourceNode);
+          nodesSet.add(targetNode);
+
+          // Create links
+          const linkKey = `${sourceNode}->${targetNode}`;
+          if (linksMap.has(linkKey)) {
+            linksMap.get(linkKey)!.value += 1;
+          } else {
+            linksMap.set(linkKey, {
+              source: sourceNode,
+              target: targetNode,
+              value: 1,
+            });
+          }
+        }
+        return currDimension;
+      }, null as string | null);
     });
 
-    // Create the X scale for the dimensions
-    const xScale = d3.scalePoint()
-      .domain(dimensions)
-      .range([margin.left, size.width - margin.right]);
-
-    // Draw axes for each dimension
-    dimensions.forEach((dimension, index) => {
-      const axisGroup = svg.append('g')
-        .attr('transform', `translate(${xScale(dimension)})`);
-
-      axisGroup.call(d3.axisLeft(yScales[dimension] as any));
-
-      // Add title to y-axis below the axis using the corresponding axisLabels array
-      axisGroup.append('text')
-        .attr('y', size.height - margin.bottom + 20)  // Adjusted value for better label positioning
-        .attr('x', 0)
-        .attr('text-anchor', 'middle')
-        .style('font-size', '12px')
-        .style('font-weight', 'bold')  // Bold axis title
-        .text(axisLabels[index]); // Use predefined axis labels
+    // Convert nodes and links to arrays
+    const nodesArray = Array.from(nodesSet);
+    const nodes = nodesArray.map((name) => {
+      const [dimension, category] = name.split('_');
+      return { name, dimension, category };
     });
 
-    // Color scale for Risk Rating
-    const colorScale = d3.scaleOrdinal()
-      .domain(categoricalVars.RiskRating)
-      .range(['#2ca02c', '#ff7f0e', '#d62728']);  // Low, Medium, High
+    const nodeMap = new Map<string, number>();
+    nodes.forEach((node, index) => {
+      nodeMap.set(node.name, index);
+    });
 
-    // Create distinct styles for lines based on RiskRating
-    const lineStyles: Record<string, string> = {
-      Low: '5,5',   // Dashed line for Low Risk
-      Medium: '10,5', // Longer dashes for Medium Risk
-      High: 'none',  // Solid line for High Risk
-    };
+    const links = Array.from(linksMap.values()).map((link) => ({
+      source: nodeMap.get(link.source)!,
+      target: nodeMap.get(link.target)!,
+      value: link.value,
+    }));
 
-    const lineWidths: Record<string, number> = {
-      Low: 1,
-      Medium: 1.5,
-      High: 2,
-    };
+    // Create sankey diagram
+    const sankeyGenerator = sankey()
+      .nodeWidth(15)
+      .nodePadding(10)
+      .extent([
+        [margin.left, margin.top],
+        [size.width - margin.right, size.height - margin.bottom],
+      ]);
 
-    // Draw lines colored and styled by Risk Rating
-    svg.append('g')
+    const graph = sankeyGenerator({
+      nodes: nodes.map((d) => ({ ...d })),
+      links: links.map((d) => ({ ...d })),
+    });
+
+    // Create a color scale for nodes based on their names
+    const nodeColorScale = d3
+      .scaleOrdinal<string, string>()
+      .domain(nodesArray)
+      .range(
+        nodesArray.map((_, i) =>
+          d3.interpolateRainbow(i / nodesArray.length)
+        )
+      );
+
+    // Draw links with the same color as their source node
+    svg
+      .append('g')
+      .attr('class', 'links')
       .selectAll('path')
-      .data(data)
-      .enter().append('path')
-      .attr('d', (d) => d3.line()(
-        dimensions.map((p) => [xScale(p)!, yScales[p](d[p as keyof DataType])!])
-      ))
+      .data(graph.links)
+      .enter()
+      .append('path')
+      .attr('d', sankeyLinkHorizontal())
+      .attr('stroke-width', (d) => Math.max(1, d.width))
+      .attr('stroke', (d) => nodeColorScale((d.source as any).name))
       .attr('fill', 'none')
-      .attr('stroke', (d) => colorScale(d.RiskRating))
-      .attr('stroke-width', (d) => lineWidths[d.RiskRating])
-      .attr('stroke-dasharray', (d) => lineStyles[d.RiskRating]);  // Apply distinct dash patterns
+      .attr('opacity', 0.7);
 
-    // Create a legend
-    const legendGroup = svg.append('g')
-      .attr('transform', `translate(${size.width - margin.right}, ${margin.top})`);  // Place on the right side
+    // Draw nodes with colors matching their names
+    svg
+      .append('g')
+      .attr('class', 'nodes')
+      .selectAll('rect')
+      .data(graph.nodes)
+      .enter()
+      .append('rect')
+      .attr('x', (d) => d.x0)
+      .attr('y', (d) => d.y0)
+      .attr('height', (d) => Math.max(1, d.y1 - d.y0))
+      .attr('width', (d) => d.x1 - d.x0)
+      .attr('fill', (d) => nodeColorScale((d as any).name))
+      .attr('stroke', '#000');
 
-    // Add legend title
-    legendGroup.append('text')
-      .attr('x', -30)
-      .attr('y', -legendRectSize - 5)
-      .attr('text-anchor', 'start')
-      .style('font-size', '14px')
-      .style('font-weight', 'bold')
-      .text('Risk Rating');
-
-    // Draw legend items
-    const legend = legendGroup.selectAll('.legend-item')
-      .data(categoricalVars.RiskRating)
-      .enter().append('g')
-      .attr('class', 'legend-item')
-      .attr('transform', (d, i) => `translate(0, ${i * (legendRectSize + legendMargin)})`);
-
-    // Add colored rectangles for legend
-    legend.append('rect')
-      .attr('x', 0)
-      .attr('width', legendRectSize)
-      .attr('height', legendRectSize)
-      .attr('fill', (d) => colorScale(d));
-
-    // Add legend labels
-    legend.append('text')
-      .attr('x', legendRectSize + 5)
-      .attr('y', legendRectSize / 2)
+    // Add node labels
+    svg
+      .append('g')
+      .selectAll('text')
+      .data(graph.nodes)
+      .enter()
+      .append('text')
+      .attr('x', (d) => d.x0 - 6)
+      .attr('y', (d) => (d.y1 + d.y0) / 2)
       .attr('dy', '0.35em')
-      .style('font-size', '12px')
-      .text((d) => d);
+      .attr('text-anchor', 'end')
+      .text((d) => (d as any).category)
+      .filter((d) => d.x0 < size.width / 2)
+      .attr('x', (d) => d.x1 + 6)
+      .attr('text-anchor', 'start');
+
+    // Add axis labels
+    dimensions.forEach((dimension, index) => {
+      const xPosition =
+        margin.left +
+        (index * (size.width - margin.left - margin.right)) /
+          (dimensions.length - 1);
+
+      svg
+        .append('text')
+        .attr('x', xPosition)
+        .attr('y', margin.top - 20)
+        .attr('text-anchor', 'middle')
+        .style('font-size', '14px')
+        .style('font-weight', 'bold')
+        .text(axisLabels[index]);
+    });
+
+    // Add plot title, adjusted to prevent overlap
+    svg
+      .append('text')
+      .attr('x', size.width / 2)
+      .attr('y', margin.top / 2) // Position title higher to avoid overlap
+      .attr('text-anchor', 'middle')
+      .style('font-size', '18px')
+      .style('font-weight', 'bold')
+      .text('Financial Risk Assessment Sankey Diagram');
   }
 
   return (
-    <div ref={scatterRef} className="chart-container" style={{ width: '100%', height: '600px' }}>
+    <div
+      ref={scatterRef}
+      className="chart-container"
+      style={{ width: '100%', height: '500px' }}
+    >
       <svg id="parallel-coordinates-svg"></svg>
     </div>
   );

@@ -23,14 +23,14 @@ export default function BarChartOverview() {
   const barRef = useRef<HTMLDivElement>(null);
   const [data, setData] = useState<DataType[]>([]);
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const margin = { top: 60, right: 150, bottom: 100, left: 80 }; // Adjusted left margin and top margin for the title
+  const margin = { top: 60, right: 150, bottom: 100, left: 80 };
+
   const onResize = useDebounceCallback((size) => setSize(size), 200);
   useResizeObserver({ ref: barRef, onResize });
 
   // Load the CSV data
   useEffect(() => {
     d3.csv('/data/financial_risk_assessment.csv', (d) => {
-      // Convert the age to a number and group it into ranges
       const age = +d.Age;
       const ageGroup = categorizeAge(age); // Categorize the age
 
@@ -56,19 +56,37 @@ export default function BarChartOverview() {
     const svg = d3.select('#bar-svg');
 
     const riskCategories = ['Low', 'Medium', 'High'];
-    const colorScale = d3.scaleOrdinal().domain(riskCategories).range(['#82ca9d', '#ffc658', '#ff6f61']);
+    const colorScale = d3.scaleOrdinal()
+      .domain(riskCategories)
+      .range(['#82ca9d', '#ffc658', '#ff6f61']);
 
-    // Aggregate data by Age and Risk Rating (Income is summed for each Age-RiskRating group)
-    const aggregatedData = d3.rollup(data, v => d3.sum(v, d => d.Income), d => d.Age, d => d.RiskRating);
+    // Aggregate data by Age and Risk Rating with totalIncome and count for averaging
+    const aggregatedData = d3.rollup(
+      data,
+      v => ({
+        totalIncome: d3.sum(v, d => d.Income),
+        count: v.length,
+      }),
+      d => d.Age,
+      d => d.RiskRating
+    );
 
-    // Convert aggregated data to a format suitable for stacking
+    // Convert aggregated data to calculate average income per person
     const stackedData = Array.from(aggregatedData, ([age, riskData]) => {
-      const row = { Age: age } as any;
+      const row = { Age: age };
       riskCategories.forEach((risk) => {
-        row[risk] = riskData.get(risk) || 0;
+        const groupData = riskData.get(risk);
+        if (groupData) {
+          row[risk] = groupData.totalIncome / groupData.count; // Calculate average income
+        } else {
+          row[risk] = 0; // Default to 0 if no data for this risk category
+        }
       });
       return row;
     });
+
+    // Debugging: Log stacked data to verify structure
+    console.log('Stacked Data:', stackedData);
 
     const xScale = d3.scaleBand()
       .range([margin.left, size.width - margin.right])
@@ -79,56 +97,47 @@ export default function BarChartOverview() {
       .range([size.height - margin.bottom, margin.top])
       .domain([0, d3.max(stackedData, d => d3.sum(riskCategories, risk => d[risk]))]).nice();
 
-    // X-axis with rotated labels
+    // X-axis
     svg.append('g')
       .attr('transform', `translate(0,${size.height - margin.bottom})`)
       .call(d3.axisBottom(xScale))
       .selectAll('text')
-      .attr('transform', 'rotate(-45)')  // Rotate the labels
-      .style('text-anchor', 'end')       // Align the text to the end
-      .style('font-size', '10px');       // Reduce font size if needed
+      .attr('transform', 'rotate(-45)')
+      .style('text-anchor', 'end')
+      .style('font-size', '10px');
 
     svg.append('g')
       .attr('transform', `translate(${margin.left},0)`)
       .call(d3.axisLeft(yScale));
 
-    // Add chart title
+    // Update chart title and labels
     svg.append('text')
       .attr('x', size.width / 2)
-      .attr('y', margin.top - 40) // Position above the plot
+      .attr('y', margin.top - 40)
       .attr('text-anchor', 'middle')
       .style('font-size', '15px')
       .style('font-weight', 'bold')
-      .text('Income Distribution by Age and Risk Rating');
+      .text('Average Income per Person by Age and Risk Rating');
 
-    // Add X-axis label
     svg.append('text')
-      .attr('x', size.width / 2) // Center horizontally
-      .attr('y', size.height - margin.bottom + 50) // Position below the axis
+      .attr('transform', 'rotate(-90)')
+      .attr('x', -(size.height / 2))
+      .attr('y', margin.left - 70)
       .attr('text-anchor', 'middle')
       .style('font-size', '14px')
       .style('font-weight', 'bold')
-      .text('Age Groups');
-
-    // Add Y-axis label
-    svg.append('text')
-      .attr('transform', 'rotate(-90)') // Rotate the text vertically
-      .attr('x', -(size.height / 2)) // Center the label vertically (negative due to rotation)
-      .attr('y', margin.left - 70) // Position away from the axis
-      .attr('text-anchor', 'middle')
-      .style('font-size', '14px')
-      .style('font-weight', 'bold')
-      .text('Total Income');
+      .text('Average Income per Person');
 
     // Stack the data by Risk Rating
     const stack = d3.stack().keys(riskCategories);
     const series = stack(stackedData);
 
+    // Draw the stacked bar chart
     svg.append('g')
       .selectAll('g')
       .data(series)
       .enter().append('g')
-      .attr('fill', d => colorScale(d.key) as string)
+      .attr('fill', d => colorScale(d.key))
       .selectAll('rect')
       .data(d => d)
       .enter().append('rect')
@@ -137,11 +146,10 @@ export default function BarChartOverview() {
       .attr('height', d => yScale(d[0]) - yScale(d[1]))
       .attr('width', xScale.bandwidth());
 
-    // Add a legend container (position it to the right of the chart)
+    // Add legend
     const legend = svg.append('g')
       .attr('transform', `translate(${size.width - margin.right + 10}, ${margin.top})`);
 
-    // Add legend title
     legend.append('text')
       .attr('x', 0)
       .attr('y', -10)
@@ -150,9 +158,7 @@ export default function BarChartOverview() {
       .style('font-weight', 'bold')
       .text('Risk Rating');
 
-    // Add legend items for each risk category
     riskCategories.forEach((category, i) => {
-      // Legend color rectangle
       legend.append('rect')
         .attr('x', 0)
         .attr('y', i * 20)
@@ -160,10 +166,9 @@ export default function BarChartOverview() {
         .attr('height', 18)
         .attr('fill', colorScale(category));
 
-      // Legend text
       legend.append('text')
         .attr('x', 25)
-        .attr('y', i * 20 + 13)  // Adjust the y to vertically center with the rectangle
+        .attr('y', i * 20 + 13)
         .style('text-anchor', 'start')
         .style('font-size', '12px')
         .text(category);

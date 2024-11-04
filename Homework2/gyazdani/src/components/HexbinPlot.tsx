@@ -197,7 +197,7 @@ export default function HexbinPlot() {
   }
 
   return (
-    <div ref={scatterRef} className="chart-container" style={{ width: '100%', height: '600px' }}>
+    <div ref={scatterRef} className="chart-container" style={{ width: '100%', height: '500px' }}>
       <svg id="hexbin-svg"></svg>
     </div>
   );
