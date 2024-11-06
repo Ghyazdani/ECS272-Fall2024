@@ -7,7 +7,7 @@ import BarChartOverview from './components/BarChartOverview';
 import HexbinPlot from './components/HexbinPlot';
 import SankeyPlot from './components/ParallelCoordinatesPlot';
 
-// Adjust the color theme for Material UI
+// Adjust the color theme for Material UI.
 const theme = createTheme({
   palette: {
     primary: {
